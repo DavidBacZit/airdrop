@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Airdrop Claim</title>
+  <title></title>
   <!-- Tailwind CSS via CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Ethers.js -->
@@ -12,149 +12,114 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-800 p-6">
-  <div class="max-w-xl mx-auto bg-white shadow-lg rounded-2xl p-6">
-    <!-- Header with title and connect button aligned right -->
-    <div class="flex justify-between items-center mb-4">
-      <h1 class="text-2xl font-bold">Airdrop Claim</h1>
+  <div class="max-w-md mx-auto bg-white shadow rounded-2xl p-6 space-y-4">
+    <!-- Connect button aligned top-right -->
+    <div class="flex justify-end">
       <button id="connectBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">
         Connect Wallet
       </button>
     </div>
 
-    <!-- Connection status -->
-    <div id="status" class="mb-4 text-sm text-gray-600">Not connected to wallet</div>
+    <!-- Status (including amount eligibility) -->
+    <div id="status" class="text-center text-gray-600">Not connected</div>
 
-    <!-- Eligibility Display -->
-    <div id="eligibility" class="mt-4 p-4 bg-gray-100 rounded-lg hidden">
-      <p>Address: <span id="userAddress" class="font-mono"></span></p>
-      <p>Eligible Amount: <span id="eligibleAmount" class="font-semibold"></span></p>
+    <!-- Claim button -->
+    <div class="text-center">
+      <button id="claimBtn" class="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition hidden">
+        Claim Airdrop
+      </button>
     </div>
-
-    <!-- Claim Button -->
-    <button id="claimBtn" class="mt-4 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition hidden">
-      Claim Airdrop
-    </button>
-
-    <!-- Transaction Status -->
-    <div id="txStatus" class="mt-4 text-sm text-gray-600"></div>
   </div>
 
   <script>
+    // Grab global ethers if available
+    const ethers = window.ethers;
+
     // =============== Configuration ===============
     const CONTRACT_ADDRESS = "0x9569ad4B353D4811064ad9970B198fcb914428D5";
     const PROOFS_URL = '/proofs.json';
     const CSV_URL = '/airdrop.csv';
-    const CHAIN_ID = '0x27ef'; // 10143 in hex
+    const CHAIN_ID_HEX = '0x27ef'; // 10143
 
     // State
-    let provider, signer, userAddress;
-    let airdropData = [];
+    let provider, signer, userAddress, airdropData = [];
 
-    // UI references
-    const statusDiv = document.getElementById('status');
+    // UI refs
     const connectBtn = document.getElementById('connectBtn');
-    const eligibilityDiv = document.getElementById('eligibility');
-    const userAddressSpan = document.getElementById('userAddress');
-    const eligibleAmountSpan = document.getElementById('eligibleAmount');
+    const statusDiv = document.getElementById('status');
     const claimBtn = document.getElementById('claimBtn');
-    const txStatusDiv = document.getElementById('txStatus');
 
-    // ===== Connect using injected provider (e.g. MetaMask) =====
+    // ===== Connect & load =====
     connectBtn.addEventListener('click', async () => {
       try {
-        if (!window.ethereum) throw new Error('No Web3 provider found');
+        statusDiv.textContent = 'Connecting...';
+        if (!window.ethereum) throw new Error('No Web3 provider');
+
         provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
-        // Request account access
         await provider.send('eth_requestAccounts', []);
         signer = provider.getSigner();
         userAddress = await signer.getAddress();
 
-        // Check network, request switch if needed
+        // Ensure correct network
         const { chainId } = await provider.getNetwork();
-        if ('0x' + chainId.toString(16) !== CHAIN_ID) {
-          try {
-            await window.ethereum.request({
-              method: 'wallet_switchEthereumChain',
-              params: [{ chainId: CHAIN_ID }]
-            });
-          } catch (switchError) {
-            statusDiv.textContent = 'Please add/switch to Monad Testnet in your wallet.';
-            return;
-          }
+        if ('0x' + chainId.toString(16) !== CHAIN_ID_HEX) {
+          await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: CHAIN_ID_HEX }] });
         }
 
-        statusDiv.innerHTML = `Connected: <a href="https://testnet.monadscan.com/address/${userAddress}" target="_blank" class="text-blue-600 underline">${userAddress}</a>`;
+        statusDiv.textContent = 'Connected: ' + userAddress;
         connectBtn.disabled = true;
-        userAddressSpan.textContent = userAddress;
 
-        // Load CSV and check eligibility
+        // Load CSV and check
         await loadCsv();
-        checkEligibility();
-      } catch (err) {
-        console.error(err);
-        statusDiv.textContent = 'Connection error: ' + err.message;
+        await checkAndShow();
+      } catch (e) {
+        statusDiv.textContent = e.message;
+        console.error(e);
       }
     });
 
-    // ===== Load CSV file =====
+    // ===== Load CSV =====
     async function loadCsv() {
-      statusDiv.textContent = 'Loading airdrop data...';
       const resp = await fetch(CSV_URL);
-      const text = await resp.text();
-      const { data, errors } = Papa.parse(text, { header: true, dynamicTyping: true });
-      if (errors.length) {
-        throw new Error('CSV parse error');
-      }
-      airdropData = data;
-      statusDiv.textContent = 'Airdrop data loaded.';
+      const txt = await resp.text();
+      const parsed = Papa.parse(txt, { header: true, dynamicTyping: true });
+      airdropData = parsed.data;
     }
 
-    // ===== Check eligibility =====
-    function checkEligibility() {
+    // ===== Check eligibility & show button =====
+    async function checkAndShow() {
       const entry = airdropData.find(r => r.account.toLowerCase() === userAddress.toLowerCase());
       if (!entry) {
-        statusDiv.textContent = 'Not eligible for airdrop.';
+        statusDiv.textContent = 'No airdrop allocated.';
         return;
       }
-      eligibleAmountSpan.textContent = entry.amount;
-      eligibilityDiv.classList.remove('hidden');
+      statusDiv.textContent = `You can claim ${entry.amount}`;
+
+      // Attach claim handler
       claimBtn.classList.remove('hidden');
-      statusDiv.textContent = 'Eligible: ' + entry.amount;
-      window.currentAirdrop = entry;
+      claimBtn.onclick = () => claim(entry);
     }
 
-    // ===== Claim transaction =====
-    claimBtn.addEventListener('click', async () => {
-      txStatusDiv.textContent = 'Fetching proof...';
+    // ===== Claim =====
+    async function claim({ index, account, amount }) {
       try {
-        const { index, account, amount } = window.currentAirdrop;
+        statusDiv.textContent = 'Getting proof...';
         const proofs = await fetch(PROOFS_URL).then(r => r.json());
         const proof = proofs[index];
-        if (!proof) throw new Error('Proof not found');
+        if (!proof) throw new Error('Proof missing');
 
-        const contract = new ethers.Contract(
-          CONTRACT_ADDRESS,
-          ['function claim(uint256,address,uint256,bytes32[]) external'],
-          signer
-        );
-        txStatusDiv.textContent = 'Sending transaction...';
+        const contract = new ethers.Contract(CONTRACT_ADDRESS,
+          ['function claim(uint256,address,uint256,bytes32[]) external'], signer);
+        statusDiv.textContent = 'Sending...';
         const tx = await contract.claim(index, account, amount, proof);
-        txStatusDiv.textContent = `Sent: ${tx.hash}`;
+        statusDiv.textContent = `Pending (${tx.hash})`;
         await tx.wait();
-        txStatusDiv.textContent = 'Claim successful!';
+        statusDiv.textContent = 'Claim successful';
       } catch (err) {
+        statusDiv.textContent = err.message;
         console.error(err);
-        const msg = err.message;
-        if (msg.includes('Already claimed')) txStatusDiv.textContent = 'Error: Already claimed.';
-        else if (msg.includes('Invalid Merkle proof')) txStatusDiv.textContent = 'Error: Invalid proof.';
-        else txStatusDiv.textContent = 'Transaction failed: ' + msg;
       }
-    });
-
-    // ===== Security notes =====
-    // - Always serve CSV/proofs over HTTPS
-    // - Validate and sanitize CSV data
-    // - Minimal permissions: request only eth_requestAccounts & chain switch
+    }
   </script>
 </body>
 </html>
