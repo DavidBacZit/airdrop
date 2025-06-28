@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Merkle Airdrop DApp</title>
+  <!-- Tailwind CSS via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Ethers.js -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.min.js"></script>
+  <!-- WalletConnect Provider -->
+  <script src="https://cdn.jsdelivr.net/npm/@walletconnect/web3-provider@1.7.8/dist/umd/index.min.js"></script>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 p-6">
+  <div class="max-w-xl mx-auto bg-white shadow-lg rounded-2xl p-6">
+    <h1 class="text-2xl font-bold mb-4">Merkle Airdrop Claim</h1>
+    <div id="status" class="mb-4 text-sm text-gray-600">Not connected</div>
+
+    <!-- Wallet Connect Button -->
+    <button id="connectBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">
+      Connect Wallet
+    </button>
+
+    <!-- CSV Upload -->
+    <div class="mt-4">
+      <label class="block text-sm font-medium mb-1">Upload airdrop.csv:</label>
+      <input type="file" id="csvInput" accept=".csv" class="block w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:border file:border-gray-300 file:rounded-lg file:text-sm file:font-semibold file:bg-gray-100 hover:file:bg-gray-200" />
+    </div>
+
+    <!-- Eligibility Display -->
+    <div id="eligibility" class="mt-4 p-4 bg-gray-100 rounded-lg hidden">
+      <p>Address: <span id="userAddress" class="font-mono"></span></p>
+      <p>Eligible Amount: <span id="eligibleAmount" class="font-semibold"></span></p>
+    </div>
+
+    <!-- Claim Button -->
+    <button id="claimBtn" class="mt-4 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition hidden">
+      Claim Airdrop
+    </button>
+
+    <!-- Transaction Status -->
+    <div id="txStatus" class="mt-4 text-sm text-gray-600"></div>
+  </div>
+
+  <script>
+    // =============== Configuration ===============
+    const CONTRACT_ADDRESS = "0x9569ad4B353D4811064ad9970B198fcb914428D5";
+    const PROOFS_URL = '/proofs.json';
+    const CSV_COLUMNS = ["index", "account", "amount"];
+
+    // State variables
+    let provider;    // Ethers/Web3 provider
+    let signer;      // Ethers signer
+    let userAddress;// Connected address
+    let airdropData = []; // Parsed CSV rows
+
+    // UI elements
+    const statusDiv = document.getElementById('status');
+    const connectBtn = document.getElementById('connectBtn');
+    const csvInput = document.getElementById('csvInput');
+    const eligibilityDiv = document.getElementById('eligibility');
+    const userAddressSpan = document.getElementById('userAddress');
+    const eligibleAmountSpan = document.getElementById('eligibleAmount');
+    const claimBtn = document.getElementById('claimBtn');
+    const txStatusDiv = document.getElementById('txStatus');
+
+    // ===== WalletConnect + Ethers setup =====
+    connectBtn.addEventListener('click', async () => {
+      try {
+        statusDiv.textContent = 'Connecting...';
+
+        // Initialize WalletConnect provider
+        const wcProvider = new WalletConnectProvider.default({
+          rpc: { 1: "https://mainnet.infura.io/v3/YOUR_INFURA_ID" }, // Add other chains if needed
+        });
+        await wcProvider.enable(); // Trigger QR Code modal
+
+        // Wrap with ethers provider
+        provider = new ethers.providers.Web3Provider(wcProvider);
+        signer = provider.getSigner();
+        userAddress = await signer.getAddress();
+
+        statusDiv.textContent = 'Connected: ' + userAddress;
+        connectBtn.disabled = true;
+        csvInput.disabled = false;
+        userAddressSpan.textContent = userAddress;
+
+        // If CSV already loaded, check eligibility
+        if (airdropData.length) checkEligibility();
+      } catch (err) {
+        console.error(err);
+        statusDiv.textContent = 'Connection failed: ' + err.message;
+      }
+    });
+
+    // ===== CSV Loading & Parsing =====
+    csvInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: true,
+        complete: (results) => {
+          // Validate columns
+          const cols = results.meta.fields;
+          if (!CSV_COLUMNS.every(c => cols.includes(c))) {
+            statusDiv.textContent = 'Invalid CSV format';
+            return;
+          }
+          airdropData = results.data;
+          statusDiv.textContent = 'CSV loaded.';
+          if (userAddress) checkEligibility();
+        },
+        error: (err) => {
+          console.error(err);
+          statusDiv.textContent = 'CSV parse error: ' + err.message;
+        }
+      });
+    });
+
+    // ===== Eligibility Check =====
+    function checkEligibility() {
+      const entry = airdropData.find(row => row.account.toLowerCase() === userAddress.toLowerCase());
+      if (!entry) {
+        statusDiv.textContent = 'Not eligible for airdrop.';
+        eligibilityDiv.classList.add('hidden');
+        claimBtn.classList.add('hidden');
+        return;
+      }
+
+      // Show eligible amount
+      eligibleAmountSpan.textContent = entry.amount;
+      eligibilityDiv.classList.remove('hidden');
+      claimBtn.classList.remove('hidden');
+      statusDiv.textContent = 'Eligible, ready to claim.';
+
+      // Save for claim
+      window.currentAirdrop = entry;
+    }
+
+    // ===== Claim Functionality =====
+    claimBtn.addEventListener('click', async () => {
+      txStatusDiv.textContent = 'Fetching proof...';
+      try {
+        const { index, account, amount } = window.currentAirdrop;
+        // Fetch Merkle proof JSON
+        const resp = await fetch(PROOFS_URL);
+        const proofs = await resp.json();
+        const proof = proofs[index];
+        if (!proof) throw new Error('Proof not found for index ' + index);
+
+        // Initialize contract instance
+        const contract = new ethers.Contract(CONTRACT_ADDRESS, [
+          'function claim(uint256,address,uint256,bytes32[]) external'
+        ], signer);
+
+        txStatusDiv.textContent = 'Sending transaction...';
+        const tx = await contract.claim(index, account, amount, proof);
+        txStatusDiv.textContent = `Transaction sent: ${tx.hash}`;
+
+        // Wait for confirmation
+        await tx.wait();
+        txStatusDiv.textContent = 'Claim successful!';
+      } catch (err) {
+        console.error(err);
+        // Detailed error handling
+        if (err.message.includes('Already claimed')) {
+          txStatusDiv.textContent = 'Error: Already claimed.';
+        } else if (err.message.includes('Invalid Merkle proof')) {
+          txStatusDiv.textContent = 'Error: Invalid proof.';
+        } else {
+          txStatusDiv.textContent = 'Transaction failed: ' + err.message;
+        }
+      }
+    });
+
+    // ===== Security & Best Practices =====
+    // - Do not trust client-side data: proofs.json should be served over HTTPS and integrity-checked
+    // - Always validate CSV structure before using
+    // - Use 'dynamicTyping' in PapaParse to ensure numeric types
+    // - Provide clear UI feedback to avoid re-entrancy or duplicate claims
+    // - Only request minimal permissions via WalletConnect
+    // - Protect against malicious CSV uploads by validating addresses and amounts
+  </script>
+</body>
+</html>
